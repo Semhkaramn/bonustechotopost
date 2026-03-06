@@ -25,7 +25,9 @@ from telethon.errors import (
     FloodWaitError,
     ChatWriteForbiddenError,
     AuthKeyUnregisteredError,
-    UserDeactivatedBanError
+    UserDeactivatedBanError,
+    ChatSendMediaForbiddenError,
+    ChatSendPhotosForbiddenError
 )
 import config
 import database as db
@@ -317,10 +319,8 @@ async def forward_message(source_channel_config: dict, message, source_event_cha
         original_text = message.raw_text or ''
         original_entities = list(message.entities) if message.entities else []
 
-        # Media için caption
-        if not original_text and message.media:
-            original_text = message.caption or ''
-            original_entities = list(message.caption_entities) if message.caption_entities else []
+        # Media için caption - Telethon'da caption zaten raw_text içinde
+        # Ayrıca entities de message.entities içinde (caption için de)
 
         # Trigger keywords kontrolü
         if not check_trigger_keywords(original_text, trigger_keywords):
@@ -462,6 +462,33 @@ async def forward_message(source_channel_config: dict, message, source_event_cha
         )
         return False
 
+    except (ChatSendMediaForbiddenError, ChatSendPhotosForbiddenError) as e:
+        logger.error(f"❌ Hedefe medya gönderilemedi (izin yok): {source_channel_config.get('target_title', target_chat_id)} - {type(e).__name__}")
+        # Media olmadan sadece text olarak göndermeyi dene
+        try:
+            if final_text:
+                await client.send_message(
+                    entity=target_chat_id,
+                    message=final_text + "\n\n⚠️ (Medya gönderilemedi - izin yok)",
+                    formatting_entities=final_entities if final_entities else None,
+                    parse_mode=None,
+                    link_preview=False
+                )
+                logger.info(f"📝 Medya yerine sadece metin gönderildi: {target_chat_id}")
+        except Exception:
+            pass
+        await db.add_post(
+            source_channel_id=source_channel_config['id'],
+            source_link=f"t.me/{message.chat_id}/{message.id}",
+            source_chat_id=message.chat_id,
+            source_message_id=message.id,
+            target_chat_id=target_chat_id,
+            target_message_id=0,
+            status='media_forbidden',
+            has_media=True
+        )
+        return False
+
     except Exception as e:
         logger.error(f"❌ Forward hatası: {e}")
         return False
@@ -538,7 +565,7 @@ async def setup_message_handler():
                 return
 
             source_title = source_channel.get('source_title', str(event.chat_id))
-            message_text = event.message.raw_text or event.message.caption or ''
+            message_text = event.message.raw_text or ''
             listen_type = source_channel.get('listen_type', 'direct')
 
             logger.info(f"📩 Mesaj alındı [{source_title}] mode={listen_type}")
@@ -604,23 +631,41 @@ async def graceful_shutdown(sig=None):
     """Graceful shutdown işle"""
     global shutdown_flag, client
 
+    if shutdown_flag:
+        return  # Zaten shutdown yapılıyor
+
     shutdown_flag = True
+    logger.info("🛑 Shutdown başlatılıyor...")
 
     try:
         await update_bot_status('offline')
     except Exception:
         pass
 
+    # Önce client'ı kapat
     if client and client.is_connected():
         try:
-            await client.disconnect()
+            await asyncio.wait_for(client.disconnect(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Client disconnect timeout")
         except Exception:
             pass
 
+    # Sonra database'i kapat
     try:
         await db.close_db()
     except Exception:
         pass
+
+    # Pending task'ları temizle
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    logger.info("✅ Shutdown tamamlandı")
 
 
 def setup_signal_handlers(loop):
