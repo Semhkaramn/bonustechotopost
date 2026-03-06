@@ -343,13 +343,24 @@ async def get_source_channel(source_chat_id: int) -> Optional[Dict[str, Any]]:
         try:
             chat_id = int(source_chat_id)
         except (ValueError, TypeError):
+            logger.debug(f"Geçersiz chat_id: {source_chat_id}")
             return None
 
+        # Önce kanalın var olup olmadığını kontrol et
         row = await conn.fetchrow(
-            'SELECT * FROM source_channels WHERE source_chat_id = $1 AND is_active = TRUE',
+            'SELECT * FROM source_channels WHERE source_chat_id = $1',
             chat_id
         )
-        return dict(row) if row else None
+
+        if not row:
+            return None
+
+        # Kanal var ama aktif değilse
+        if not row['is_active']:
+            logger.debug(f"Kanal pasif: {row.get('source_title', chat_id)}")
+            return None
+
+        return dict(row)
 
 
 async def get_all_source_channels() -> List[Dict[str, Any]]:
