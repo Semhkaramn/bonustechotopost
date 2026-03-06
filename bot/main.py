@@ -31,6 +31,7 @@ import config
 import database as db
 
 # Telethon'un gereksiz loglarını ÖNCE kapat (Got difference for channel X updates vs.)
+# Telethon'un gereksiz loglarını ÖNCE kapat
 logging.getLogger('telethon').setLevel(logging.ERROR)
 logging.getLogger('telethon.client.updates').setLevel(logging.ERROR)
 logging.getLogger('telethon.network.mtprotosender').setLevel(logging.ERROR)
